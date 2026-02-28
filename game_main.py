@@ -20,6 +20,12 @@ import dialogue_system
 import gacha_animation
 import town_map
 import i18n
+import threading
+import time
+try:
+    from net_integration import NetClient
+except Exception:
+    NetClient = None
 
 # ============================================================
 #  显示配置
@@ -45,6 +51,8 @@ WIDTH, HEIGHT = DEFAULT_RESOLUTION
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
 pygame.display.set_caption(i18n.t("暗夜割草者：深渊轮回"))
 clock = pygame.time.Clock()
+NET_CLIENT = None
+NET_MODE = False
 
 # ============================================================
 #  颜色
@@ -1649,6 +1657,7 @@ class GameState:
     DIALOGUE = 'dialogue'
     TOWN = 'town'
     GACHA_ANIM = 'gacha_anim'
+    LOBBY = 'lobby'
 
 
 # ============================================================
@@ -2151,9 +2160,10 @@ def draw_start_screen(surface):
     start_y = max(280, HEIGHT//2 - 60)
     btn_data = [
         ('start',    i18n.t("开始游戏"),   CYAN,    start_y),
-        ('settings', i18n.t("设置"),       PURPLE,  start_y + 80),
-        ('lang',     i18n.t("语言"),       ORANGE,  start_y + 160),
-        ('quit',     i18n.t("退出游戏"),   RED,     start_y + 240),
+        ('versus',   i18n.t("对战模式"),   BLUE,    start_y + 80),
+        ('settings', i18n.t("设置"),       PURPLE,  start_y + 160),
+        ('lang',     i18n.t("语言"),       ORANGE,  start_y + 240),
+        ('quit',     i18n.t("退出游戏"),   RED,     start_y + 320),
     ]
     for key, text, color, y in btn_data:
         btn_w, btn_h = 300, 58
@@ -2178,6 +2188,93 @@ def draw_start_screen(surface):
     )
     surface.blit(info, (WIDTH//2 - info.get_width()//2, HEIGHT - 40))
     return buttons
+
+
+def draw_lobby_screen(surface):
+    """简单的多人大厅 UI: 列表, 刷新, 创建, 返回"""
+    surface.fill(DARK_BG)
+    title = _render_outlined(font_lg, i18n.t("对战大厅"), CYAN)
+    surface.blit(title, (40, 40))
+
+    buttons = {}
+    # Top controls
+    refresh_rect = pygame.Rect(WIDTH - 380, 40, 80, 36)
+    create_rect = pygame.Rect(WIDTH - 285, 40, 120, 36)
+    back_rect = pygame.Rect(WIDTH - 160, 40, 120, 36)
+    pygame.draw.rect(surface, (40, 40, 50), refresh_rect, border_radius=6)
+    pygame.draw.rect(surface, (40, 60, 40), create_rect, border_radius=6)
+    pygame.draw.rect(surface, (50, 40, 40), back_rect, border_radius=6)
+    surface.blit(_render_outlined(font_sm, i18n.t("刷新"), WHITE), (refresh_rect.x+10, refresh_rect.y+6))
+    surface.blit(_render_outlined(font_sm, i18n.t("创建房间"), WHITE), (create_rect.x+8, create_rect.y+6))
+    surface.blit(_render_outlined(font_sm, i18n.t("返回"), WHITE), (back_rect.x+30, back_rect.y+6))
+    buttons['refresh'] = refresh_rect
+    buttons['create'] = create_rect
+    buttons['back'] = back_rect
+
+    # Lobby list
+    list_x = 40; list_y = 120; entry_h = 64; pad = 8
+    surface.blit(_render_outlined(font_md, i18n.t("可加入的房间"), WHITE), (list_x, list_y - 40))
+    if NET_CLIENT is None:
+        surface.blit(_render_outlined(font_sm, i18n.t("未启用网络模块"), (200,200,200)), (list_x, list_y))
+        return buttons
+
+    games = getattr(NET_CLIENT, 'latest_lobby', []) or []
+    if not games:
+        surface.blit(_render_outlined(font_sm, i18n.t("暂无房间，点击 创建 房间"), (180,180,180)), (list_x, list_y))
+        return buttons
+
+    for idx, g in enumerate(games):
+        y = list_y + idx * (entry_h + pad)
+        rect = pygame.Rect(list_x, y, WIDTH - 420, entry_h)
+        pygame.draw.rect(surface, (28, 28, 36), rect, border_radius=6)
+        name = g.get('name', '')
+        gid = g.get('id', '')
+        players = g.get('players', 0)
+        surface.blit(_render_outlined(font_sm, f"{name}", WHITE), (rect.x + 10, rect.y + 8))
+        surface.blit(_render_outlined(font_xs, f"{players} 玩家", (180,180,180)), (rect.x + 10, rect.y + 36))
+        join_rect = pygame.Rect(WIDTH - 320, y + 12, 260, entry_h - 24)
+        pygame.draw.rect(surface, (60, 100, 160), join_rect, border_radius=6)
+        surface.blit(_render_outlined(font_sm, i18n.t("加入"), WHITE), (join_rect.x + 90, join_rect.y + 8))
+        buttons[('join', gid)] = join_rect
+
+    return buttons
+
+
+def confirm_sync(surface, text):
+    """Blocking confirmation dialog. Returns True if user confirms."""
+    overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+    overlay.fill((0, 0, 0, 150))
+    box_w, box_h = 480, 160
+    bx = WIDTH // 2 - box_w // 2
+    by = HEIGHT // 2 - box_h // 2
+    box_rect = pygame.Rect(bx, by, box_w, box_h)
+    # draw once initial
+    surface.blit(overlay, (0, 0))
+    pygame.draw.rect(surface, (30, 30, 40), box_rect, border_radius=8)
+    pygame.draw.rect(surface, (90, 90, 100), box_rect, 2, border_radius=8)
+    txt = _render_outlined(font_md, text, WHITE)
+    surface.blit(txt, (bx + 20, by + 20))
+    yes_rect = pygame.Rect(bx + 60, by + box_h - 60, 140, 40)
+    no_rect = pygame.Rect(bx + box_w - 200, by + box_h - 60, 140, 40)
+    pygame.draw.rect(surface, (50, 120, 50), yes_rect, border_radius=6)
+    pygame.draw.rect(surface, (120, 50, 50), no_rect, border_radius=6)
+    surface.blit(_render_outlined(font_sm, i18n.t("是"), WHITE), (yes_rect.x + 50, yes_rect.y + 6))
+    surface.blit(_render_outlined(font_sm, i18n.t("否"), WHITE), (no_rect.x + 50, no_rect.y + 6))
+    pygame.display.flip()
+    # wait for user input
+    while True:
+        for ev in pygame.event.get():
+            if ev.type == pygame.QUIT:
+                return False
+            if ev.type == pygame.KEYDOWN and ev.key == pygame.K_ESCAPE:
+                return False
+            if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
+                mx, my = pygame.mouse.get_pos()
+                if yes_rect.collidepoint((mx, my)):
+                    return True
+                if no_rect.collidepoint((mx, my)):
+                    return False
+        pygame.time.wait(10)
 
 
 def draw_settings_screen(surface):
@@ -2704,7 +2801,35 @@ def init_run(char_index=0):
 def main():
     global run, enemies, bosses, exp_gems, particles, enemy_bullets, save_data, material_drops
 
-    game_state = GameState.START
+    global NET_MODE, NET_CLIENT
+    game_state = None
+    # 命令行启用网络模式: --net
+    if '--net' in sys.argv:
+        NET_MODE = True
+        # optional: --server ws://host:port and --proxy http://proxy:port
+        server_uri = 'ws://localhost:8765'
+        proxy = None
+        if '--server' in sys.argv:
+            try:
+                server_uri = sys.argv[sys.argv.index('--server') + 1]
+            except Exception:
+                pass
+        if '--proxy' in sys.argv:
+            try:
+                proxy = sys.argv[sys.argv.index('--proxy') + 1]
+            except Exception:
+                proxy = None
+        if NetClient is None:
+            print('Net integration not available (missing net_integration module)')
+        else:
+            NET_CLIENT = NetClient(uri=server_uri, proxy=proxy)
+            NET_CLIENT.start()
+            print('Net client started (connecting to server)', server_uri, 'proxy=', proxy)
+            # enter multiplayer lobby UI
+            game_state = GameState.LOBBY
+
+    if game_state is None:
+        game_state = GameState.START
     start_buttons = {}
     settings_buttons = {}
     lang_buttons = {}
@@ -2713,6 +2838,7 @@ def main():
     upgrade_cards = {}
     over_buttons = {}
     victory_buttons = {}
+    lobby_buttons = {}
     shop_buttons = {}
     inventory_buttons = {}
     codex_buttons = {}
@@ -2739,6 +2865,8 @@ def main():
     town_map.init(screen, font_lg, font_md, font_sm, font_xs, WIDTH, HEIGHT)
     npc_buttons = {}
     dialogue_buttons = {}
+    # modal confirmation helper
+    confirm_dialog = None
 
     # 城镇玩家
     town_player = town_map.TownPlayer(800, 500, 0)
@@ -2824,6 +2952,43 @@ def main():
                     if start_buttons.get('start') and start_buttons['start'].collidepoint(mouse_pos):
                         game_state = GameState.TOWN
                         play_sfx('select')
+                    elif start_buttons.get('quit') and start_buttons['quit'].collidepoint(mouse_pos):
+                        ok = confirm_sync(screen, i18n.t("确认退出游戏？"))
+                        if ok:
+                            running = False
+                        play_sfx('select')
+                    
+                    elif start_buttons.get('versus') and start_buttons['versus'].collidepoint(mouse_pos):
+                        # enter multiplayer lobby (create NetClient if necessary)
+                        if NetClient is None:
+                            print('Net integration not available (missing net_integration module)')
+                        else:
+                            if NET_CLIENT is None:
+                                # respect CLI args if provided
+                                server_uri = 'ws://localhost:8765'
+                                proxy = None
+                                if '--server' in sys.argv:
+                                    try:
+                                        server_uri = sys.argv[sys.argv.index('--server') + 1]
+                                    except Exception:
+                                        pass
+                                if '--proxy' in sys.argv:
+                                    try:
+                                        proxy = sys.argv[sys.argv.index('--proxy') + 1]
+                                    except Exception:
+                                        proxy = None
+                                NET_CLIENT = NetClient(uri=server_uri, proxy=proxy)
+                                NET_CLIENT.start()
+                                print('Net client started (connecting to server)', NET_CLIENT.uri, 'proxy=', proxy)
+                                # request lobby immediately
+                                NET_CLIENT.request_lobby()
+                            else:
+                                print('Net client already started')
+                                NET_CLIENT.request_lobby()
+                            # switch to lobby UI
+                            NET_MODE = True
+                            game_state = GameState.LOBBY
+                        play_sfx('select')
                     elif start_buttons.get('settings') and start_buttons['settings'].collidepoint(mouse_pos):
                         game_state = GameState.SETTINGS
                         play_sfx('select')
@@ -2880,6 +3045,34 @@ def main():
                                     break
 
                 # ---- 角色选择 ----
+                elif game_state == GameState.LOBBY:
+                    # 大厅按钮处理
+                    if lobby_buttons.get('refresh') and lobby_buttons['refresh'].collidepoint(mouse_pos):
+                        if NET_CLIENT:
+                            NET_CLIENT.request_lobby()
+                        play_sfx('select')
+                    elif lobby_buttons.get('create') and lobby_buttons['create'].collidepoint(mouse_pos):
+                        if NET_CLIENT:
+                            name = 'Room_' + str(int(time.time()) % 100000)
+                            NET_CLIENT.create_game(name)
+                        play_sfx('select')
+                    elif lobby_buttons.get('back') and lobby_buttons['back'].collidepoint(mouse_pos):
+                        # confirm before leaving lobby
+                        ok = confirm_sync(screen, i18n.t("返回主菜单？"))
+                        if ok:
+                            game_state = GameState.START
+                        play_sfx('select')
+                    else:
+                        for key, rect in list(lobby_buttons.items()):
+                            if isinstance(key, tuple) and key[0] == 'join':
+                                gid = key[1]
+                                if rect.collidepoint(mouse_pos):
+                                    pname = save_data.get('player_name', 'Player' + str(int(time.time()) % 10000))
+                                    if NET_CLIENT:
+                                        NET_CLIENT.join_game(gid, pname)
+                                    play_sfx('select')
+                                    break
+
                 elif game_state == GameState.CHAR_SELECT:
                     for idx, rect in char_cards.items():
                         if rect.collidepoint(mouse_pos):
@@ -3295,6 +3488,20 @@ def main():
             pygame.display.flip()
             continue
 
+        # ---- 大厅 (多人) ----
+        if game_state == GameState.LOBBY:
+            lobby_buttons = draw_lobby_screen(screen)
+            pygame.display.flip()
+            # if the client just received a joined notification, transition once
+            if NET_CLIENT and getattr(NET_CLIENT, 'latest_join', None) is not None:
+                # consume the join event and enter game
+                lj = NET_CLIENT.latest_join
+                NET_CLIENT.latest_join = None
+                init_run(0)
+                # optionally set player id/game id into run or net state
+                game_state = GameState.PLAYING
+            continue
+
         # ---- 城镇地图 ----
         if game_state == GameState.TOWN:
             keys = pygame.key.get_pressed()
@@ -3595,6 +3802,14 @@ def main():
                     create_particles(hx, hy, 5, 'levelup')
                 play_sfx('hit')
 
+        # 网络模式：发送本玩家简要状态到服务器
+        if NET_MODE and NET_CLIENT and NET_CLIENT.connected and NET_CLIENT.game_id and NET_CLIENT.player_id:
+            try:
+                inp = {'x': run.x, 'y': run.y, 'hp': run.health, 'score': run.kills}
+                NET_CLIENT.send_input(NET_CLIENT.game_id, NET_CLIENT.player_id, inp)
+            except Exception:
+                pass
+
         # ---- 敌人更新 ----
         new_enemies = []
         alive_enemies = []
@@ -3883,6 +4098,15 @@ def main():
             w.draw_projectiles(screen, sh)
 
         # 玩家角色
+        # 网络：绘制其它玩家
+        if NET_MODE and NET_CLIENT and NET_CLIENT.connected:
+            try:
+                snap = NET_CLIENT.get_interpolated_snapshot()
+                draw_other_players(screen, sh, snap, NET_CLIENT.player_id)
+            except Exception:
+                pass
+
+        # 玩家角色
         if run.character:
             run.character.x = px; run.character.y = py
             run.character.draw(screen, sh)
@@ -3908,9 +4132,35 @@ def main():
 
     # 退出前保存
     save_game(save_data)
+    # 停止网络客户端（如有）
+    try:
+        if NET_CLIENT:
+            NET_CLIENT.stop()
+    except Exception:
+        pass
     pygame.quit()
     sys.exit()
 
 
 if __name__ == '__main__':
     main()
+
+def draw_other_players(surface, sh, snapshot, local_pid):
+    """Render other players from a server snapshot as simple circles."""
+    for pid, p in snapshot.items():
+        if pid == local_pid:
+            continue
+        try:
+            x = int(p.get('x', 0) + sh[0])
+            y = int(p.get('y', 0) + sh[1])
+            hp = p.get('hp', 100)
+            # draw a circle and HP bar
+            color = (150, 200, 255)
+            pygame.draw.circle(surface, color, (x, y), 14)
+            # hp bar
+            w = 30
+            hw = int(w * max(0, hp) / p.get('max_hp', 100))
+            pygame.draw.rect(surface, (40,40,40), (x - w//2, y - 22, w, 6))
+            pygame.draw.rect(surface, (255,50,50), (x - w//2, y - 22, hw, 6))
+        except Exception:
+            continue

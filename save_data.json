@@ -1,12 +1,12 @@
 {
   "soul_shards": 0,
-  "total_runs": 0,
+  "total_runs": 1,
   "best_time": 0,
   "best_kills": 0,
-  "language": "en",
+  "language": "zh",
   "resolution": [
-    1280,
-    720
+    1600,
+    900
   ],
   "fullscreen": false,
   "unlocked_chars": [
@@ -49,7 +49,9 @@
   "codex_chars": [
     0
   ],
-  "codex_weapons": [],
+  "codex_weapons": [
+    "魔法飞弹"
+  ],
   "codex_bosses": [],
   "codex_enemies": [
     0,
